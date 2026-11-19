@@ -1,0 +1,21 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'fr.yt2pdf'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'fr.yt2pdf'
+        minSdk 29          // Android 10+
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
