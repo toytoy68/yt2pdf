@@ -5,4 +5,4 @@ dependencyResolutionManagement {
     repositories { google(); mavenCentral() }
 }
 rootProject.name = "YT2PDF"
-include ':app'
+include ':app', ':videodl'

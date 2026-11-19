@@ -25,17 +25,23 @@ jobs:
       - name: Compilation
         run: gradle assembleDebug --no-daemon
 
-      - name: Renommer l'APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk yt2pdf.apk
+      - name: Renommer les APK
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk yt2pdf.apk
+          cp videodl/build/outputs/apk/debug/videodl-debug.apk videodl.apk
 
       - uses: actions/upload-artifact@v4
         with:
-          name: yt2pdf-apk
-          path: yt2pdf.apk
+          name: apk
+          path: |
+            yt2pdf.apk
+            videodl.apk
 
       # Publie l'APK dans « Releases » : téléchargeable directement depuis le téléphone
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
-          name: YT → PDF (build ${{ github.run_number }})
-          files: yt2pdf.apk
+          name: YT → PDF + Vidéo DL (build ${{ github.run_number }})
+          files: |
+            yt2pdf.apk
+            videodl.apk
