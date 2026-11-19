@@ -100,8 +100,21 @@ public class MainActivity extends Activity {
         });
         root.addView(go);
 
+        Button sniff = new Button(this);
+        sniff.setText("Ouvrir la page et capter la vidéo");
+        sniff.setOnClickListener(v -> {
+            String u = DownloadService.extractUrl(urlField.getText().toString());
+            if (u == null) {
+                Toast.makeText(this, "Lien non reconnu.", Toast.LENGTH_LONG).show();
+                return;
+            }
+            startActivity(SnifferActivity.intent(this, u));
+        });
+        root.addView(sniff);
+
         TextView note = new TextView(this);
-        note.setText("Qualité : jusqu'à 1080p. Le moteur yt-dlp se met à jour tout seul une fois par jour.");
+        note.setText("Si un site n'est pas reconnu, une notification propose d'ouvrir la page : lance la lecture "
+                + "et la vidéo est captée. Qualité jusqu'à 1080p ; yt-dlp se met à jour tout seul chaque jour.");
         note.setTextColor(Color.GRAY);
         note.setTextSize(12);
         note.setPadding(0, dp(16), 0, 0);

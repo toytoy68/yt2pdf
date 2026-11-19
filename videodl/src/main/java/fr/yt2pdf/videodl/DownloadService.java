@@ -37,7 +37,7 @@ public class DownloadService extends Service {
 
     private static final String CHANNEL = "downloads";
     private static final int FG_ID = 1;
-    private static final String EXTRA_URL = "url", EXTRA_AUDIO = "audio";
+    private static final String EXTRA_JOB = "job";
     private static final String ACTION_CANCEL = "fr.yt2pdf.videodl.CANCEL";
     private static final Pattern URL = Pattern.compile("https?://\\S+");
 
@@ -48,12 +48,27 @@ public class DownloadService extends Service {
     private int resultId = 100;
     private boolean engineReady = false;
 
+    /** Une demande de téléchargement : lien de page (yt-dlp) ou flux direct capté par le navigateur intégré. */
+    public static class Job implements java.io.Serializable {
+        public final String url;
+        public final boolean audio;
+        public String referer, userAgent, cookies, title;
+        public boolean direct;   // flux capté : en cas d'échec, pas de nouvelle proposition de détection
+        public Job(String url, boolean audio) { this.url = url; this.audio = audio; }
+    }
+
     public static void start(Context ctx, String url, boolean audio) {
+        start(ctx, new Job(url, audio));
+    }
+
+    public static void start(Context ctx, Job job) {
         Intent i = new Intent(ctx, DownloadService.class);
-        i.putExtra(EXTRA_URL, url);
-        i.putExtra(EXTRA_AUDIO, audio);
+        i.putExtra(EXTRA_JOB, job);
         ctx.startForegroundService(i);
     }
+
+    private static final java.util.Set<String> MEDIA_EXT = new java.util.HashSet<>(java.util.Arrays.asList(
+            "mp4", "webm", "mkv", "mov", "m4v", "ts", "flv", "3gp", "m4a", "mp3", "opus", "ogg", "aac", "wav"));
 
     /** Premier lien http(s) d'un texte partagé (Chrome envoie parfois « titre + lien »). */
     public static String extractUrl(String text) {
@@ -80,16 +95,16 @@ public class DownloadService extends Service {
         }
         startForeground(FG_ID, progressNotif("Préparation…", "", -1),
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
-        if (intent == null || intent.getStringExtra(EXTRA_URL) == null) {
+        @SuppressWarnings("deprecation")
+        Job job = intent == null ? null : (Job) intent.getSerializableExtra(EXTRA_JOB);
+        if (job == null) {
             stopSelfResult(startId);
             return START_NOT_STICKY;
         }
-        String url = intent.getStringExtra(EXTRA_URL);
-        boolean audio = intent.getBooleanExtra(EXTRA_AUDIO, false);
         queued.incrementAndGet();
         worker.execute(() -> {
             try {
-                run(url, audio);
+                run(job);
             } finally {
                 queued.decrementAndGet();
                 stopSelfResult(startId);   // s'arrête seulement si c'était la dernière demande
@@ -131,7 +146,9 @@ public class DownloadService extends Service {
         }
     }
 
-    private void run(String url, boolean audio) {
+    private void run(Job job) {
+        String url = job.url;
+        boolean audio = job.audio;
         String id = "dl-" + System.currentTimeMillis();
         File dir = new File(getCacheDir(), id);
         try {
@@ -142,7 +159,16 @@ public class DownloadService extends Service {
             YoutubeDLRequest req = new YoutubeDLRequest(url);
             req.addOption("--no-playlist");
             req.addOption("--no-mtime");
-            req.addOption("-o", dir.getAbsolutePath() + "/%(title).150B.%(ext)s");
+            String name = "%(title).150B";
+            if (job.title != null && !job.title.trim().isEmpty()) {
+                String t = job.title.replaceAll("[\\\\/:*?\"<>|\\n\\r]+", " ").trim();
+                if (t.length() > 120) t = t.substring(0, 120).trim();
+                name = t.replace("%", "%%");
+            }
+            req.addOption("-o", dir.getAbsolutePath() + "/" + name + ".%(ext)s");
+            if (job.referer != null) req.addOption("--referer", job.referer);
+            if (job.userAgent != null) req.addOption("--user-agent", job.userAgent);
+            if (job.cookies != null && !job.cookies.isEmpty()) req.addOption("--add-header", "Cookie:" + job.cookies);
             if (audio) {
                 req.addOption("-f", "ba[ext=m4a]/ba/b");
                 req.addOption("-x");
@@ -170,18 +196,35 @@ public class DownloadService extends Service {
             currentId = null;
 
             File out = biggestFile(dir);
-            if (out == null) throw new Exception("Aucun fichier produit.");
+            if (out == null) throw new NotVideo("aucun fichier produit");
+            String ext = out.getName().substring(out.getName().lastIndexOf('.') + 1).toLowerCase();
+            if (!MEDIA_EXT.contains(ext))   // ex. une image .svg prise pour la vidéo
+                throw new NotVideo("le site a renvoyé un fichier ." + ext + ", pas une vidéo");
             updateFg("Enregistrement…", out.getName(), -1);
             Uri uri = saveToDownloads(out);
             notifyDone(out.getName(), uri);
         } catch (YoutubeDL.CanceledException e) {
             notifyMsg("Téléchargement annulé", url, null);
         } catch (Exception e) {
-            notifyMsg("Échec du téléchargement", errorLine(e), null);
+            String why = errorLine(e);
+            if (job.direct) {
+                notifyMsg("Échec du téléchargement", why, null);
+            } else {
+                // yt-dlp ne sait pas lire ce site : on propose la détection dans le navigateur intégré
+                PendingIntent pi = PendingIntent.getActivity(this, resultId,
+                        SnifferActivity.intent(this, url).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                        PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+                notifyMsg("Vidéo non trouvée automatiquement",
+                        "Touche ici pour ouvrir la page, lancer la lecture et capter la vidéo.\n(" + why + ")", pi);
+            }
         } finally {
             currentId = null;
             deleteRec(dir);
         }
+    }
+
+    private static class NotVideo extends Exception {
+        NotVideo(String m) { super(m); }
     }
 
     private static File biggestFile(File dir) {
