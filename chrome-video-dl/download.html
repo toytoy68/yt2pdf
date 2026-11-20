@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Vidéo DL — téléchargement</title>
+<link rel="icon" href="icons/icon32.png">
+<style>
+  body { font: 14px "Segoe UI", system-ui, sans-serif; color: #222; background: #f4f6f9; margin: 0; }
+  .box { max-width: 620px; margin: 60px auto; background: #fff; border-radius: 12px; padding: 24px 28px; box-shadow: 0 2px 10px rgba(0,0,0,.08); }
+  h1 { font-size: 17px; margin: 0 0 4px; color: #1f6fd1; }
+  #name { font-weight: 600; margin: 10px 0 18px; word-break: break-word; }
+  .bar { height: 12px; background: #e3e8ef; border-radius: 6px; overflow: hidden; }
+  .bar div { height: 100%; width: 0; background: #1f6fd1; transition: width .3s; }
+  #step { margin-top: 10px; color: #444; }
+  #detail { margin-top: 4px; color: #888; font-size: 12px; }
+  .ok { color: #1e823c !important; font-weight: 600; }
+  .err { color: #c4302b !important; font-weight: 600; }
+  button { margin-top: 18px; padding: 8px 14px; border: 0; border-radius: 6px; background: #eee; cursor: pointer; }
+  .warn { margin-top: 12px; color: #a35a00; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="box">
+  <h1>Vidéo DL</h1>
+  <div id="name">…</div>
+  <div class="bar"><div id="fill"></div></div>
+  <div id="step">Préparation…</div>
+  <div id="detail"></div>
+  <div id="warn" class="warn"></div>
+  <button id="cancel">Annuler</button>
+</div>
+<script src="lib/mux.min.js"></script>
+<script src="common.js"></script>
+<script src="download.js"></script>
+</body>
+</html>
