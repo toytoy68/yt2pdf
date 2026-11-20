@@ -1,11 +1,12 @@
 /*
- * Fonction injectée DANS la page YouTube (monde "MAIN") : elle a accès à ytcfg
- * et aux cookies de YouTube. Elle doit être autonome (aucune référence extérieure).
- * Renvoie { videoId, title, author, language, auto, items:[{type:'seg'|'chap', start, text}] }
+ * Fonction injectée DANS la page YouTube (monde "MAIN") : elle a accès au lecteur,
+ * à ytcfg et aux cookies de YouTube. Elle doit être autonome (aucune référence extérieure).
+ * Renvoie { videoId, title, author, language, auto, method, items:[{type:'seg'|'chap', start, text}] }
  * ou { error }.
  */
 async function ytGetTranscript(prefLang) {
   const log = [];
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   try {
     const u = new URL(location.href);
     const videoId = u.searchParams.get("v") ||
@@ -13,9 +14,10 @@ async function ytGetTranscript(prefLang) {
     if (!videoId) return { error: "Ouvre d'abord une vidéo YouTube." };
 
     const cfg = window.ytcfg && window.ytcfg.get ? window.ytcfg : null;
-    const apiKey = cfg && cfg.get("INNERTUBE_API_KEY");
     const context = cfg && cfg.get("INNERTUBE_CONTEXT");
     const hl = (context && context.client && context.client.hl) || "fr";
+    const player = document.getElementById("movie_player") ||
+      document.querySelector("#shorts-player, .html5-video-player");
 
     // ---------- utilitaires
     const findKey = (obj, key, max = 1) => {
@@ -32,9 +34,11 @@ async function ytGetTranscript(prefLang) {
     const runsText = (t) => !t ? "" : (t.simpleText != null ? t.simpleText
       : (t.runs || []).map((r) => r.text).join(""));
     const extract = (html, name) => {
-      const i = html.indexOf(name + " = {") >= 0 ? html.indexOf(name + " = {") : html.indexOf(name + "={");
+      let i = html.indexOf(name + " = {");
+      if (i < 0) i = html.indexOf(name + "={");
       if (i < 0) return null;
-      let start = html.indexOf("{", i), depth = 0, inStr = false, esc = false;
+      const start = html.indexOf("{", i);
+      let depth = 0, inStr = false, esc = false;
       for (let j = start; j < html.length; j++) {
         const c = html[j];
         if (inStr) { if (esc) esc = false; else if (c === "\\") esc = true; else if (c === '"') inStr = false; continue; }
@@ -46,141 +50,172 @@ async function ytGetTranscript(prefLang) {
       }
       return null;
     };
+    const clean = (s) => (s || "").replace(/\s+/g, " ").trim();
 
-    // ---------- page fraîche (ytInitialData de la page peut être périmé après navigation interne)
-    const html = await (await fetch("/watch?v=" + videoId + "&hl=" + hl, { credentials: "include" })).text();
-    const initialData = extract(html, "ytInitialData");
-    const player = extract(html, "ytInitialPlayerResponse");
-    const vd = (player && player.videoDetails) || {};
+    // ---------- infos de la vidéo + chapitres (page fraîche : ytInitialData peut être périmé)
+    let initialData = null, playerResp = null;
+    try {
+      const html = await (await fetch("/watch?v=" + videoId + "&hl=" + hl, { credentials: "include" })).text();
+      initialData = extract(html, "ytInitialData");
+      playerResp = extract(html, "ytInitialPlayerResponse");
+    } catch (e) { log.push("Page : " + e.message); }
+
+    const vd = (playerResp && playerResp.videoDetails) || {};
+    const pd = (player && player.getVideoData && player.getVideoData()) || {};
     const res = {
       videoId,
-      title: vd.title || document.title.replace(/ - YouTube$/, ""),
-      author: vd.author || "",
+      title: vd.title || (pd.video_id === videoId && pd.title) || document.title.replace(/ - YouTube$/, ""),
+      author: vd.author || (pd.video_id === videoId && pd.author) || "",
       language: "", auto: false, items: [],
     };
 
-    const wantName = (() => {
-      try { return new Intl.DisplayNames([hl], { type: "language" }).of(prefLang).toLowerCase(); }
-      catch (e) { return prefLang.toLowerCase(); }
-    })();
-    const isAutoTitle = (t) => /auto|automati/i.test(t);
+    const chapters = [];
+    for (const list of findKey(initialData, "chapters", 5) || []) {
+      if (!Array.isArray(list)) continue;
+      for (const c of list) {
+        const r = c && c.chapterRenderer;
+        if (r) chapters.push({ type: "chap", start: (r.timeRangeStartMillis || 0) / 1000, text: clean(runsText(r.title)) });
+      }
+      if (chapters.length) break;
+    }
+    const withChapters = (items) => {
+      if (!chapters.length || items.some((i) => i.type === "chap")) return items;
+      return [...items, ...chapters.filter((c) => c.text)].sort((a, b) =>
+        a.start - b.start || (a.type === "chap" ? -1 : 1));
+    };
 
-    // ---------- Méthode 1 : API get_transcript (celle du panneau « Transcription »)
-    const getTranscript = async (params) => {
-      const r = await fetch("/youtubei/v1/get_transcript?prettyPrint=false" + (apiKey ? "&key=" + apiKey : ""), {
+    const isAuto = (t) => /auto|automati/i.test(t || "");
+
+    // ---------- Méthode 1 : jeton du lecteur (affiche brièvement les sous-titres)
+    try {
+      if (!player || !player.toggleSubtitlesOn) throw new Error("lecteur introuvable");
+      if (player.getVideoData().video_id !== videoId) throw new Error("une pub est en cours, attends sa fin");
+
+      const ok = (n) => n.includes("/api/timedtext") && n.includes("v=" + videoId) && n.includes("pot=");
+      const pick = () => performance.getEntriesByType("resource").map((e) => e.name).filter(ok).pop();
+      try { performance.setResourceTimingBufferSize(5000); } catch (e) { /* ignore */ }
+
+      let url = pick();
+      const wasOn = player.isSubtitlesOn ? player.isSubtitlesOn() : false;
+      if (!url) {
+        const waitUrl = new Promise((resolve) => {
+          const obs = new PerformanceObserver((list) => {
+            const x = list.getEntries().map((e) => e.name).filter(ok).pop() || pick();
+            if (x) { obs.disconnect(); resolve(x); }
+          });
+          obs.observe({ type: "resource" });
+          setTimeout(() => { obs.disconnect(); resolve(pick() || null); }, 8000);
+        });
+        if (wasOn) { player.toggleSubtitles(); await sleep(300); }
+        player.toggleSubtitlesOn();
+        url = await waitUrl;
+        if (!wasOn) player.toggleSubtitles();
+      }
+      if (!url) throw new Error("le lecteur n'a pas chargé de sous-titres");
+
+      // Choix de la piste
+      let tracks = [];
+      try { tracks = player.getOption("captions", "tracklist", { includeAsr: true }) || []; } catch (e) { /* ignore */ }
+      if (!tracks.length) {
+        const pt = playerResp && playerResp.captions && playerResp.captions.playerCaptionsTracklistRenderer;
+        tracks = ((pt && pt.captionTracks) || []).map((t) => ({
+          languageCode: t.languageCode, kind: t.kind || "", displayName: runsText(t.name),
+        }));
+      }
+      const match = (t, code) => t.languageCode === code || (t.languageCode || "").startsWith(code + "-");
+      const find = (code, asr) => tracks.find((t) => match(t, code) && ((t.kind === "asr") === asr));
+      let tr = find(prefLang, false) || find(prefLang, true) || find("en", false) || find("en", true);
+      let tlang = "";
+      if (!tr) {
+        const cur = new URL(url).searchParams;
+        tr = tracks[0] || { languageCode: cur.get("lang"), kind: cur.get("kind") || "" };
+        if (tr.languageCode !== prefLang) tlang = prefLang;
+      }
+
+      const q = new URL(url);
+      q.searchParams.set("fmt", "json3");
+      q.searchParams.set("lang", tr.languageCode);
+      if (tr.kind === "asr") q.searchParams.set("kind", "asr"); else q.searchParams.delete("kind");
+      q.searchParams.delete("variant");
+      if (tlang) q.searchParams.set("tlang", tlang); else q.searchParams.delete("tlang");
+
+      const r = await fetch(q.toString(), { credentials: "include" });
+      const txt = await r.text();
+      if (!r.ok || !txt.trim()) throw new Error("réponse vide (HTTP " + r.status + ")");
+      const j = JSON.parse(txt);
+      const items = [];
+      for (const ev of j.events || []) {
+        if (!ev.segs) continue;
+        const text = clean(ev.segs.map((s) => s.utf8 || "").join(""));
+        if (text) items.push({ type: "seg", start: (ev.tStartMs || 0) / 1000, text });
+      }
+      if (!items.length) throw new Error("transcription vide");
+      res.items = withChapters(items);
+      res.language = (tr.displayName || tr.languageName || tr.languageCode) +
+        (tlang ? " → traduit (" + tlang + ")" : "");
+      res.auto = tr.kind === "asr";
+      res.method = "lecteur";
+      return res;
+    } catch (e) { log.push("Lecteur : " + e.message); }
+
+    // ---------- Méthode 2 : API get_transcript (celle du panneau « Transcription »)
+    try {
+      if (!context) throw new Error("ytcfg indisponible");
+      const ep = findKey(initialData, "getTranscriptEndpoint");
+      if (!ep || !ep.params) throw new Error("pas de transcription proposée");
+      const r = await fetch("/youtubei/v1/get_transcript?prettyPrint=false", {
         method: "POST", credentials: "include",
         headers: {
           "Content-Type": "application/json",
           "X-Youtube-Client-Name": "1",
           "X-Youtube-Client-Version": context.client.clientVersion,
         },
-        body: JSON.stringify({ context, params }),
+        body: JSON.stringify({ context, params: ep.params }),
       });
-      if (!r.ok) throw new Error("get_transcript HTTP " + r.status);
-      return r.json();
-    };
-    const parseGT = (json) => {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const json = await r.json();
       const list = findKey(json, "transcriptSegmentListRenderer");
-      const segs = (list && list.initialSegments) || [];
-      const items = [];
-      for (const s of segs) {
-        if (s.transcriptSegmentRenderer) {
-          const t = s.transcriptSegmentRenderer;
-          const text = runsText(t.snippet).replace(/\s+/g, " ").trim();
-          if (text) items.push({ type: "seg", start: (+t.startMs || 0) / 1000, text });
-        } else if (s.transcriptSectionHeaderRenderer) {
-          const h = s.transcriptSectionHeaderRenderer;
-          const text = (runsText(h.snippet) ||
-            (h.sectionHeader?.sectionHeaderViewModel?.headline?.content) || "").trim();
-          if (text) items.push({ type: "chap", start: (+h.startMs || 0) / 1000, text });
+      for (const s of (list && list.initialSegments) || []) {
+        const t = s.transcriptSegmentRenderer;
+        const h = s.transcriptSectionHeaderRenderer;
+        if (t) {
+          const text = clean(runsText(t.snippet));
+          if (text) res.items.push({ type: "seg", start: (+t.startMs || 0) / 1000, text });
+        } else if (h) {
+          const text = clean(runsText(h.snippet) || h.sectionHeader?.sectionHeaderViewModel?.headline?.content);
+          if (text) res.items.push({ type: "chap", start: (+h.startMs || 0) / 1000, text });
         }
       }
-      const menu = findKey(json, "languageMenu");
-      const langs = ((menu && menu.sortFilterSubMenuRenderer && menu.sortFilterSubMenuRenderer.subMenuItems) || [])
-        .map((m) => ({
-          title: m.title || "",
-          selected: !!m.selected,
-          params: m.continuation && m.continuation.reloadContinuationData &&
-                  m.continuation.reloadContinuationData.continuation,
-        }));
-      return { items, langs };
-    };
-
-    try {
-      if (!context) throw new Error("ytcfg indisponible");
-      const params = findKey(initialData, "getTranscriptEndpoint");
-      if (!params || !params.params) throw new Error("pas de transcription proposée");
-      let gt = parseGT(await getTranscript(params.params));
-      let current = gt.langs.find((l) => l.selected);
-      // Choisir la langue : manuelle puis auto dans la langue voulue
-      const matches = gt.langs.filter((l) => l.title.toLowerCase().startsWith(wantName));
-      const best = matches.find((l) => !isAutoTitle(l.title)) || matches[0];
-      if (best && current && best.title !== current.title && best.params) {
-        gt = { ...parseGT(await getTranscript(best.params)), langs: gt.langs };
-        current = best;
-      }
-      if (gt.items.length) {
-        res.items = gt.items;
-        res.language = current ? current.title : "";
-        res.auto = current ? isAutoTitle(current.title) : false;
-        res.method = "get_transcript";
-        return res;
-      }
-      throw new Error("réponse vide");
-    } catch (e) { log.push("API : " + e.message); }
-
-    // ---------- Méthode 2 : pistes de sous-titres (timedtext)
-    try {
-      const tracks = player && player.captions &&
-        player.captions.playerCaptionsTracklistRenderer &&
-        player.captions.playerCaptionsTracklistRenderer.captionTracks;
-      if (!tracks || !tracks.length) throw new Error("aucune piste");
-      const pick = (code, asr) => tracks.find((t) =>
-        (t.languageCode === code || t.languageCode.startsWith(code + "-")) && ((t.kind === "asr") === asr));
-      let tr = pick(prefLang, false) || pick(prefLang, true) || pick("en", false) || pick("en", true);
-      let tlang = "";
-      if (!tr) { tr = tracks[0]; if (tr.isTranslatable) tlang = "&tlang=" + prefLang; }
-      const r = await fetch(tr.baseUrl.replace(/&fmt=[^&]*/, "") + "&fmt=json3" + tlang, { credentials: "include" });
-      const txt = await r.text();
-      if (!txt.trim()) throw new Error("réponse vide (jeton requis)");
-      const j = JSON.parse(txt);
-      for (const ev of j.events || []) {
-        if (!ev.segs) continue;
-        const text = ev.segs.map((s) => s.utf8 || "").join("").replace(/\s+/g, " ").trim();
-        if (text) res.items.push({ type: "seg", start: (ev.tStartMs || 0) / 1000, text });
-      }
-      if (!res.items.length) throw new Error("vide");
-      res.language = runsText(tr.name) + (tlang ? " → " + prefLang : "");
-      res.auto = tr.kind === "asr";
-      res.method = "timedtext";
+      if (!res.items.length) throw new Error("réponse vide");
+      res.items = withChapters(res.items);
+      res.method = "get_transcript";
       return res;
-    } catch (e) { log.push("Pistes : " + e.message); }
+    } catch (e) { log.push("API : " + e.message); }
 
     // ---------- Méthode 3 : ouvrir le panneau « Transcription » et le lire
     try {
-      if (new URL(location.href).searchParams.get("v") !== videoId) throw new Error("page différente");
-      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-      const segSel = "ytd-transcript-segment-renderer";
+      const segSel = "transcript-segment-view-model, ytd-transcript-segment-renderer";
+      const panel = () => document.querySelector('[target-id="engagement-panel-searchable-transcript"]');
       if (!document.querySelector(segSel)) {
-        const btn = document.querySelector("ytd-video-description-transcript-section-renderer button") ||
-          [...document.querySelectorAll("button")].find((b) => /transcri/i.test(b.getAttribute("aria-label") || b.textContent));
-        if (!btn) throw new Error("bouton Transcription introuvable");
-        btn.click();
-        for (let i = 0; i < 40 && !document.querySelector(segSel); i++) await sleep(250);
+        const p = panel();
+        if (p) p.setAttribute("visibility", "ENGAGEMENT_PANEL_VISIBILITY_EXPANDED");
+        const btns = [...document.querySelectorAll("ytd-video-description-transcript-section-renderer button")];
+        for (const b of btns) b.click();
+        for (let i = 0; i < 60 && !document.querySelector(segSel); i++) await sleep(250);
       }
-      const nodes = document.querySelectorAll(segSel + ", ytd-transcript-section-header-renderer");
+      const nodes = document.querySelectorAll(segSel +
+        ", ytd-transcript-section-header-renderer, transcript-section-header-view-model");
       for (const n of nodes) {
-        const text = (n.querySelector(".segment-text, yt-formatted-string") || n).textContent.replace(/\s+/g, " ").trim();
-        const ts = (n.querySelector(".segment-timestamp") || {}).textContent || "";
-        const p = ts.trim().split(":").map(Number);
-        const start = p.reduce((a, b) => a * 60 + (b || 0), 0);
-        if (!text) continue;
-        res.items.push({ type: n.tagName.toLowerCase().includes("header") ? "chap" : "seg", start, text });
+        const tag = n.tagName.toLowerCase();
+        const tsEl = n.querySelector(".ytwTranscriptSegmentViewModelTimestamp, .segment-timestamp");
+        const txtEl = n.querySelector(".ytAttributedStringHost, .segment-text, yt-formatted-string") || n;
+        const text = clean(txtEl.textContent);
+        const parts = clean(tsEl && tsEl.textContent).split(":").map(Number);
+        const start = parts.reduce((a, b) => a * 60 + (b || 0), 0);
+        if (text) res.items.push({ type: tag.includes("header") ? "chap" : "seg", start, text });
       }
       if (!res.items.length) throw new Error("panneau vide");
-      const lbl = document.querySelector("ytd-transcript-footer-renderer #label-text, ytd-transcript-footer-renderer yt-dropdown-menu");
-      res.language = lbl ? lbl.textContent.trim() : "";
-      res.auto = isAutoTitle(res.language);
+      res.items = withChapters(res.items);
       res.method = "panneau";
       return res;
     } catch (e) { log.push("Panneau : " + e.message); }

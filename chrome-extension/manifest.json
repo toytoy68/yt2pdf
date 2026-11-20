@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "YT → PDF",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Récupère la transcription de la vidéo YouTube en cours et la télécharge en PDF.",
   "permissions": ["activeTab", "scripting", "downloads", "storage"],
   "host_permissions": ["https://www.youtube.com/*"],
