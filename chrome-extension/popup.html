@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<style>
+  body { font: 13px "Segoe UI", system-ui, sans-serif; width: 320px; margin: 0; color: #222; }
+  header { background: #c4302b; color: #fff; padding: 10px 14px; font-weight: 600; font-size: 14px; }
+  main { padding: 12px 14px 14px; }
+  #video { font-weight: 600; margin-bottom: 10px; line-height: 1.35; }
+  .row { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+  .row label { flex: 1; }
+  input[type=text] { width: 48px; padding: 3px 5px; }
+  select { padding: 2px; }
+  button { width: 100%; padding: 8px; border: 0; border-radius: 6px; font-size: 13px; cursor: pointer; }
+  #go { background: #c4302b; color: #fff; font-weight: 600; margin-top: 6px; }
+  #go:disabled { background: #d99; cursor: default; }
+  #copy { background: #eee; margin-top: 6px; }
+  #status { margin-top: 10px; min-height: 18px; line-height: 1.4; }
+  .err { color: #c4302b; } .ok { color: #1e823c; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<header>Transcription YouTube → PDF</header>
+<main>
+  <div id="video">…</div>
+  <div class="row"><label for="lang">Langue préférée</label><input id="lang" type="text" value="fr"></div>
+  <div class="row"><label for="ts">Horodatage cliquable</label><input id="ts" type="checkbox" checked></div>
+  <div class="row"><label for="bloc">Longueur des paragraphes</label>
+    <select id="bloc"><option value="25">Courts</option><option value="45" selected>Moyens</option><option value="90">Longs</option></select></div>
+  <button id="go">Générer le PDF</button>
+  <button id="copy" class="hidden">Copier le texte</button>
+  <div id="status"></div>
+</main>
+<script src="lib/jspdf.umd.min.js"></script>
+<script src="transcript.js"></script>
+<script src="popup.js"></script>
+</body>
+</html>
